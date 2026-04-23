@@ -34,16 +34,44 @@ struct FormatChunkPcm {
 const CHANNELS: u16 = 1;
 const SAMPLES_PER_SECOND: u32 = 44100;
 const BITS_PER_SAMPLE: u16 = 16;
-const AVG_BYTES_PER_SEC: u32 = SAMPLES_PER_SECOND * (BITS_PER_SAMPLE as u32 / 8) * CHANNELS as u32;
+const AVG_BYTES_PER_SECOND: u32 =
+    CHANNELS as u32 * SAMPLES_PER_SECOND * (BITS_PER_SAMPLE / 8) as u32;
 
 fn main() -> Result<(), std::io::Error> {
+    let mut rng = rand::rng();
+    let avg_amplitude = 8.;
+
+    match std::env::args().nth(1).as_deref() {
+        None | Some("white") => noise(|spectrum| {
+            for bin in spectrum {
+                *bin =
+                    Complex::from_polar(avg_amplitude, rng.random::<f64>() * std::f64::consts::TAU);
+            }
+        })?,
+        Some("pink") => noise(|spectrum| {
+            let max_amplitude = avg_amplitude * f64::sqrt(22050. / 2.);
+
+            for (hz, bin) in spectrum.iter_mut().enumerate() {
+                *bin = Complex::from_polar(
+                    max_amplitude / ((hz + 1) as f64).sqrt(),
+                    rng.random::<f64>() * std::f64::consts::TAU,
+                );
+            }
+        })?,
+        Some(kind) => todo!("{kind} noise not suported yet"),
+    }
+
+    Ok(())
+}
+
+fn noise(mut spectrum_setup: impl FnMut(&mut [Complex<f64>])) -> Result<(), std::io::Error> {
     let duration_in_seconds = 10;
-    let sample_data_len = AVG_BYTES_PER_SEC * duration_in_seconds;
+    let sample_data_len = AVG_BYTES_PER_SECOND * duration_in_seconds;
     let format = FormatChunkCommon {
         format_tag: WaveFormatCategory::Pcm,
         channels: CHANNELS.into(),
         samples_per_sec: SAMPLES_PER_SECOND.into(),
-        avg_bytes_per_sec: AVG_BYTES_PER_SEC.into(),
+        avg_bytes_per_sec: AVG_BYTES_PER_SECOND.into(),
         block_align: (CHANNELS * BITS_PER_SAMPLE / 8).into(),
         format_specific: FormatChunkPcm {
             bits_per_sample: BITS_PER_SAMPLE.into(),
@@ -75,14 +103,16 @@ fn main() -> Result<(), std::io::Error> {
     scratch.resize(c2r.get_outofplace_scratch_len(), Complex::ZERO);
 
     let mut dampen = -1.0;
-    let mut rand = rand::rng();
-    let amplitude = 16.;
     for _interval in 0..duration_in_seconds {
-        for frequency in &mut spectrum {
-            *frequency =
-                Complex::from_polar(amplitude, rand.random::<f64>() * std::f64::consts::TAU);
-        }
+        let (pos, neg) = spectrum.split_at_mut(SAMPLES_PER_SECOND as usize / 2);
+        spectrum_setup(&mut pos[1..]);
 
+        pos[0] = Complex::ZERO; // DC bin must be zero to avoid a constant offset in the output
+        // populate conjugates
+        for (bin, pos) in neg.iter_mut().skip(1).zip(pos.iter().rev()) {
+            *bin = pos.conj();
+        }
+        neg[0] = Complex::ZERO; // Nyquist bin must be zero to avoid a constant offset in the output
         c2r.process_outofplace_with_scratch(&mut spectrum[..], &mut time[..], &mut scratch[..]);
 
         for sample in &time {
@@ -90,10 +120,11 @@ fn main() -> Result<(), std::io::Error> {
             // else {
             //     panic!("Amplitude out of range for i16: {}", sample);
             // };
+            // assert_eq!(sample.im, 0.0);
             let amplitude = sample.re.round();
             let amplitude = amplitude + amplitude * dampen;
             let amplitude = (amplitude as i64).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
-            dampen = (dampen + 0.00001).min(0.0);
+            dampen = (dampen + 0.0001).min(0.0);
             out.write_all(&amplitude.to_le_bytes())?;
         }
     }
