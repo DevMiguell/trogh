@@ -1,6 +1,7 @@
-use std::io::Write;
+use rand::RngExt;
+use rustfft::{FftPlanner, num_complex::Complex};
 use std::io::BufWriter;
-use realfft::RealFftPlanner;
+use std::io::Write;
 use zerocopy::{
     Immutable, IntoBytes,
     little_endian::{U16, U32},
@@ -65,20 +66,34 @@ fn main() -> Result<(), std::io::Error> {
     out.write_all(&sample_data_len.to_le_bytes())?;
 
     let length = SAMPLES_PER_SECOND as usize;
-    let mut real_planner = RealFftPlanner::<f64>::new();
+    let mut real_planner = FftPlanner::<f64>::new();
+    let c2r = real_planner.plan_fft_inverse(length);
 
-    let r2c = real_planner.plan_fft_inverse(length);
-    let mut spectrum = r2c.make_input_vec();
-    // println!("spectrum length: {}", spectrum.len());
-    spectrum[440] = (1000.).into();
-    let mut time = r2c.make_output_vec();
+    let mut spectrum = [Complex::ZERO; SAMPLES_PER_SECOND as usize];
+    let mut time = [Complex::ZERO; SAMPLES_PER_SECOND as usize];
+    let mut scratch = Vec::with_capacity(c2r.get_outofplace_scratch_len());
+    scratch.resize(c2r.get_outofplace_scratch_len(), Complex::ZERO);
 
-    r2c.process(&mut spectrum, &mut time).unwrap();
-
+    let mut dampen = -1.0;
+    let mut rand = rand::rng();
+    let amplitude = 16.;
     for _interval in 0..duration_in_seconds {
+        for frequency in &mut spectrum {
+            *frequency =
+                Complex::from_polar(amplitude, rand.random::<f64>() * std::f64::consts::TAU);
+        }
+
+        c2r.process_outofplace_with_scratch(&mut spectrum[..], &mut time[..], &mut scratch[..]);
+
         for sample in &time {
-            let amplitude = &i16::try_from(sample.round() as i64).unwrap();
-            // println!("{amplitude}");
+            // let Ok(amplitude) = &i16::try_from(sample.norm().round() as i64 + i16::MIN as i64)
+            // else {
+            //     panic!("Amplitude out of range for i16: {}", sample);
+            // };
+            let amplitude = sample.re.round();
+            let amplitude = amplitude + amplitude * dampen;
+            let amplitude = (amplitude as i64).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+            dampen = (dampen + 0.00001).min(0.0);
             out.write_all(&amplitude.to_le_bytes())?;
         }
     }
