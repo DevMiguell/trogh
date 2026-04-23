@@ -1,0 +1,9 @@
+[package]
+name = "trogh"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dings = "0.1.3"
+realfft = "3.5.0"
+zerocopy = { version = "0.8.48", features = ["derive", "std"] }
