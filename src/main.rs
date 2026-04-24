@@ -32,7 +32,8 @@ struct FormatChunkPcm {
 }
 
 const CHANNELS: u16 = 1;
-const SAMPLES_PER_SECOND: u32 = 44100;
+const MAX_FREQUENCY: u32 = 22050; // Nyquist frequency, which is half the sample rate
+const SAMPLES_PER_SECOND: u32 = MAX_FREQUENCY * 2;
 const BITS_PER_SAMPLE: u16 = 16;
 const AVG_BYTES_PER_SECOND: u32 =
     CHANNELS as u32 * SAMPLES_PER_SECOND * (BITS_PER_SAMPLE / 8) as u32;
@@ -49,23 +50,74 @@ fn main() -> Result<(), std::io::Error> {
             }
         })?,
         Some("pink") => noise(|spectrum| {
-            let max_amplitude = avg_amplitude * f64::sqrt(22050. / 2.);
+            let normalization = avg_amplitude * f64::sqrt(MAX_FREQUENCY as f64 / 2.);
+            let power = normalization.powi(2);
+
             for (hz, bin) in spectrum.iter_mut().enumerate().skip(20) {
                 *bin = Complex::from_polar(
-                    max_amplitude / ((hz + 1) as f64).sqrt(),
+                    (power / (hz + 1) as f64).sqrt(),
                     rng.random::<f64>() * std::f64::consts::TAU,
                 );
             }
         })?,
         Some("brownian") => noise(|spectrum: &mut [Complex<f64>]| {
-            let max_amplitude = avg_amplitude * (22050. / 4.);
+            let pink_normalization = avg_amplitude * f64::sqrt(MAX_FREQUENCY as f64 / 2.) * 4.;
+            let pink_power = pink_normalization.powi(2);
+            let pink_max_amplitude = (pink_power / 20.).sqrt();
             for (hz, bin) in spectrum.iter_mut().enumerate().skip(20) {
                 *bin = Complex::from_polar(
-                    max_amplitude / ((hz + 1) as f64),
+                    ((1. / (hz + 1) as f64) / (1. / (20 + 1) as f64)) * pink_max_amplitude,
                     rng.random::<f64>() * std::f64::consts::TAU,
                 );
             }
         })?,
+        Some("blue") => noise(|spectrum: &mut [Complex<f64>]| {
+            let normalization = avg_amplitude / f64::sqrt(MAX_FREQUENCY as f64 / 2.);
+            let power = normalization.powi(2);
+
+            for (hz, bin) in spectrum.iter_mut().enumerate() {
+                *bin = Complex::from_polar(
+                    (power * (hz + 1) as f64).sqrt(),
+                    rng.random::<f64>() * std::f64::consts::TAU,
+                );
+            }
+        })?,
+        Some("violet") => noise(|spectrum: &mut [Complex<f64>]| {
+            let normalization = avg_amplitude / f64::sqrt(MAX_FREQUENCY as f64 / 2.) / 2.;
+            let power = normalization.powi(2);
+
+            for (hz, bin) in spectrum.iter_mut().enumerate() {
+                *bin = Complex::from_polar(
+                    power * (hz + 1) as f64,
+                    rng.random::<f64>() * std::f64::consts::TAU,
+                );
+            }
+        })?,
+        Some("grey") => {
+            let r_a = |hz: f64| {
+                ((12194.0f64).powi(2) * hz.powi(4))
+                    / ((hz.powi(2) + 20.6f64.powi(2))
+                        * f64::sqrt(
+                            (hz.powi(2) + 107.7f64.powi(2)) * (hz.powi(2) + 737.9f64.powi(2)),
+                        )
+                        * (hz.powi(2) + (12194.0f64).powi(2)))
+            };
+
+            let ra1000 = r_a(1000.);
+
+            noise(|spectrum| {
+                for (hz, bin) in spectrum.iter_mut().enumerate().skip(20) {
+                    let a_in_db = 20. * r_a(hz as f64).log10() - 20. * ra1000.log10();
+                    let avg_in_db = 20. * avg_amplitude.log10();
+                    let target_in_db = avg_in_db - a_in_db;
+                    let a = 10f64.powf(target_in_db / 20.);
+                    // .clamp(0., 10. * avg_amplitude);
+                    // let a = (1. / r_a(hz as f64)).clamp(0., 3. * avg_amplitude);
+
+                    *bin = Complex::from_polar(a, rng.random::<f64>() * std::f64::consts::TAU);
+                }
+            })?;
+        }
         Some(kind) => todo!("{kind} noise not suported yet"),
     }
 
@@ -123,7 +175,9 @@ fn noise(mut spectrum_setup: impl FnMut(&mut [Complex<f64>])) -> Result<(), std:
                 *bin = *bin
                     * Complex::from_polar(
                         1.,
-                        rng.random::<f64>() * (hz as f64 / 22050.) * std::f64::consts::FRAC_PI_2,
+                        rng.random::<f64>()
+                            * (hz as f64 / MAX_FREQUENCY as f64)
+                            * std::f64::consts::FRAC_PI_2,
                     );
             }
         }
