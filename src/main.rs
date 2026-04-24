@@ -50,10 +50,18 @@ fn main() -> Result<(), std::io::Error> {
         })?,
         Some("pink") => noise(|spectrum| {
             let max_amplitude = avg_amplitude * f64::sqrt(22050. / 2.);
-
-            for (hz, bin) in spectrum.iter_mut().enumerate() {
+            for (hz, bin) in spectrum.iter_mut().enumerate().skip(20) {
                 *bin = Complex::from_polar(
                     max_amplitude / ((hz + 1) as f64).sqrt(),
+                    rng.random::<f64>() * std::f64::consts::TAU,
+                );
+            }
+        })?,
+        Some("brownian") => noise(|spectrum: &mut [Complex<f64>]| {
+            let max_amplitude = avg_amplitude * (22050. / 4.);
+            for (hz, bin) in spectrum.iter_mut().enumerate().skip(20) {
+                *bin = Complex::from_polar(
+                    max_amplitude / ((hz + 1) as f64),
                     rng.random::<f64>() * std::f64::consts::TAU,
                 );
             }
@@ -99,21 +107,31 @@ fn noise(mut spectrum_setup: impl FnMut(&mut [Complex<f64>])) -> Result<(), std:
 
     let mut spectrum = [Complex::ZERO; SAMPLES_PER_SECOND as usize];
     let mut time = [Complex::ZERO; SAMPLES_PER_SECOND as usize];
-    let mut scratch = Vec::with_capacity(c2r.get_outofplace_scratch_len());
-    scratch.resize(c2r.get_outofplace_scratch_len(), Complex::ZERO);
+    let mut scratch = Vec::new();
+    scratch.resize(c2r.get_immutable_scratch_len(), Complex::ZERO);
 
+    let mut rng = rand::rng();
     let mut dampen = -1.0;
-    for _interval in 0..duration_in_seconds {
+    for interval in 0..duration_in_seconds {
         let (pos, neg) = spectrum.split_at_mut(SAMPLES_PER_SECOND as usize / 2);
-        spectrum_setup(&mut pos[1..]);
-
-        pos[0] = Complex::ZERO; // DC bin must be zero to avoid a constant offset in the output
+        if interval == 0 {
+            spectrum_setup(&mut pos[1..]);
+            pos[0] = Complex::ZERO; // DC bin must be zero to avoid a constant offset in the output
         // populate conjugates
+        } else {
+            for (hz, bin) in pos.iter_mut().enumerate().skip(1) {
+                *bin = *bin
+                    * Complex::from_polar(
+                        1.,
+                        rng.random::<f64>() * (hz as f64 / 22050.) * std::f64::consts::FRAC_PI_2,
+                    );
+            }
+        }
         for (bin, pos) in neg.iter_mut().skip(1).zip(pos.iter().rev()) {
             *bin = pos.conj();
         }
         neg[0] = Complex::ZERO; // Nyquist bin must be zero to avoid a constant offset in the output
-        c2r.process_outofplace_with_scratch(&mut spectrum[..], &mut time[..], &mut scratch[..]);
+        c2r.process_immutable_with_scratch(&mut spectrum[..], &mut time[..], &mut scratch[..]);
 
         for sample in &time {
             // let Ok(amplitude) = &i16::try_from(sample.norm().round() as i64 + i16::MIN as i64)
